@@ -9,6 +9,9 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, '');
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || '*';
+const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || '';
+const DASHSCOPE_BASE_URL = (process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '');
+const VISION_MODEL = process.env.VISION_MODEL || 'qwen-vl-plus';
 
 // CORS：'*' 表示放行所有来源；否则用逗号分隔的域名列表
 const corsOptions = {
@@ -16,10 +19,10 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, model: DEEPSEEK_MODEL, hasKey: Boolean(DEEPSEEK_API_KEY) });
+  res.json({ ok: true, model: DEEPSEEK_MODEL, hasKey: Boolean(DEEPSEEK_API_KEY), hasVisionKey: Boolean(DASHSCOPE_API_KEY) });
 });
 
 const SYSTEM_PROMPT = `你是「FireSeer」，一名消防应急科普领域的智能诊断专家。你会根据用户在火灾逃生互动模拟中的作答数据，生成一份专业、易懂、有针对性的中文深度分析。
@@ -153,6 +156,78 @@ app.post('/api/diagnose', async (req, res) => {
       /* 客户端已断开 */
     }
     res.end();
+  }
+});
+
+const VISION_PROMPT = `你是一名专业的消防安全检查专家。请仔细观察这张照片，识别其中可能存在的火灾安全隐患。
+
+请严格以 JSON 格式输出（不要包含任何其他文字或 Markdown），结构如下：
+{"hazards":[{"name":"隐患名称","desc":"具体说明","level":"高/中/低"}],"risk":"整体风险等级（高/中/低）","advice":"总体整改建议"}
+
+要求：
+1. hazards 数组列出所有识别到的隐患，每条包含 name、desc、level 三个字段。
+2. 若照片中没有明显火灾隐患，hazards 返回空数组，并在 advice 中给出 1-2 条日常消防提醒。
+3. 只输出 JSON 本身。`;
+
+app.post('/api/vision', async (req, res) => {
+  if (!DASHSCOPE_API_KEY) {
+    return res.status(500).json({ error: '服务器未配置 DASHSCOPE_API_KEY（视觉识别需阿里云百炼 Key），请检查后端环境变量。' });
+  }
+  const { image } = req.body || {};
+  if (!image || typeof image !== 'string') {
+    return res.status(400).json({ error: '缺少 image（base64 图片数据）。' });
+  }
+  // 兼容纯 base64 或带 data:image 前缀的两种格式
+  const dataUrl = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
+
+  try {
+    const upstream = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DASHSCOPE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: dataUrl } },
+              { type: 'text', text: VISION_PROMPT },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => '');
+      return res.status(upstream.status).json({ error: `视觉模型请求失败（${upstream.status}）：${text.slice(0, 300)}` });
+    }
+
+    const data = await upstream.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return res.status(502).json({ error: '视觉模型返回为空。' });
+    }
+
+    const text = typeof content === 'string' ? content : JSON.stringify(content);
+
+    // 尝试解析结构化 JSON，失败则回退为原始文本由前端展示
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) {
+        try { parsed = JSON.parse(m[0]); } catch { /* 忽略 */ }
+      }
+    }
+
+    res.json({ ok: true, text, parsed });
+  } catch (err) {
+    return res.status(502).json({ error: `无法连接视觉模型服务：${err.message}` });
   }
 });
 

@@ -25,6 +25,27 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, model: DEEPSEEK_MODEL, hasKey: Boolean(DEEPSEEK_API_KEY), hasVisionKey: Boolean(DASHSCOPE_API_KEY) });
 });
 
+// ===== 全局统计：后端单点真源，所有访客看到同一数值 =====
+const STATS_BASE = {
+  userCount: 15000,
+  gameCount: 28000,
+  shareCount: 8500,
+  knowledgeCount: 45000,
+};
+const globalStats = { ...STATS_BASE };
+
+// 服务端按节奏缓慢自增，模拟真实增长（所有访客读到一致的当前值）
+setInterval(() => {
+  globalStats.userCount += 1;
+  globalStats.gameCount += 1 + Math.floor(Math.random() * 3);
+  globalStats.shareCount += Math.random() < 0.35 ? 1 : 0;
+  globalStats.knowledgeCount += 5 + Math.floor(Math.random() * 11);
+}, 8000);
+
+app.get('/api/stats', (_req, res) => {
+  res.json({ ok: true, stats: globalStats });
+});
+
 const SYSTEM_PROMPT = `你是「FireSeer」，一名消防应急科普领域的智能诊断专家。你会根据用户在火灾逃生互动模拟中的作答数据，生成一份专业、易懂、有针对性的中文深度分析。
 
 请严格遵守以下要求：
